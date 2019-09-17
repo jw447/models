@@ -33,6 +33,9 @@ import numpy
 from six.moves import urllib
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
+from tensorflow.python.client import timeline
+from tensorflow.python import debug as tf_debug
+
 
 # CVDF mirror of http://yann.lecun.com/exdb/mnist/
 SOURCE_URL = 'https://storage.googleapis.com/cvdf-datasets/mnist/'
@@ -43,14 +46,24 @@ PIXEL_DEPTH = 255
 NUM_LABELS = 10
 VALIDATION_SIZE = 5000  # Size of the validation set.
 SEED = 66478  # Set to None for random seed.
-BATCH_SIZE = 64
-NUM_EPOCHS = 10
+BATCH_SIZE = 32
+NUM_EPOCHS = 1
 EVAL_BATCH_SIZE = 64
-EVAL_FREQUENCY = 100  # Number of steps between evaluations.
+EVAL_FREQUENCY = 10000  # Number of steps between evaluations.
 
+# jwang
+os.environ['TF_CPP_MIN_LOG_LEVEL']='3'
 
-FLAGS = None
+FLAGS = tf.app.flags.FLAGS
 
+tf.app.flags.DEFINE_integer('num_inter_threads', 1,
+        """Number of inter threadings.""")
+tf.app.flags.DEFINE_integer('num_intra_threads', 1,
+        """Number of intra threadings.""")
+tf.app.flags.DEFINE_boolean('self_test', False, 
+        """Run self test.""")
+tf.app.flags.DEFINE_boolean('use_fp16', False,
+        """Run with fp16.""")
 
 def data_type():
   """Return the type of the activations, weights, and placeholder variables."""
@@ -146,7 +159,7 @@ def main(_):
     train_labels = train_labels[VALIDATION_SIZE:]
     num_epochs = NUM_EPOCHS
   train_size = train_labels.shape[0]
-
+  print("Training size : {}".format(train_size))
   # This is where training samples and labels are fed to the graph.
   # These placeholder nodes will be fed a batch of training data at each
   # training step using the {feed_dict} argument to the Run() call below.
@@ -223,7 +236,10 @@ def main(_):
     # Add a 50% dropout during training only. Dropout also scales
     # activations such that no rescaling is needed at evaluation time.
     if train:
+      s_time = time.time()
       hidden = tf.nn.dropout(hidden, 0.5, seed=SEED)
+      e_time = time.time()
+      print("The exe time of dropout is: {}".format(e_time - s_time))
     return tf.matmul(hidden, fc2_weights) + fc2_biases
 
   # Training computation: logits + cross-entropy loss.
@@ -279,15 +295,28 @@ def main(_):
             feed_dict={eval_data: data[-EVAL_BATCH_SIZE:, ...]})
         predictions[begin:, :] = batch_predictions[begin - size:, :]
     return predictions
+  
+  # jwang
+  summary_writer = tf.summary.FileWriter("model/", graph=tf.get_default_graph())
+  options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+  run_metadata = tf.RunMetadata()
 
   # Create a local session to run the training.
   start_time = time.time()
-  with tf.Session() as sess:
+  config = tf.ConfigProto()
+  config.intra_op_parallelism_threads = FLAGS.num_intra_threads
+  config.inter_op_parallelism_threads = FLAGS.num_inter_threads
+  # sess = tf.Session(config=config)
+  # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
+  with tf.Session(config=config) as sess:
+  # with tf_debug.LocalCLIDebugWrapperSession(tf.Session(config=config), ui_type="readline") as sess:
     # Run all the initializers to prepare the trainable parameters.
     tf.global_variables_initializer().run()
     print('Initialized!')
     # Loop through training steps.
-    for step in xrange(int(num_epochs * train_size) // BATCH_SIZE):
+    # jwang
+    for step in xrange(1):
+    # for step in xrange(int(num_epochs * train_size) // BATCH_SIZE):
       # Compute the offset of the current minibatch in the data.
       # Note that we could use better randomization across epochs.
       offset = (step * BATCH_SIZE) % (train_size - BATCH_SIZE)
@@ -298,29 +327,35 @@ def main(_):
       feed_dict = {train_data_node: batch_data,
                    train_labels_node: batch_labels}
       # Run the optimizer to update weights.
-      sess.run(optimizer, feed_dict=feed_dict)
+      sess.run(optimizer, feed_dict=feed_dict, options=options, run_metadata=run_metadata)
       # print some extra information once reach the evaluation frequency
       if step % EVAL_FREQUENCY == 0:
-        # fetch some extra nodes' data
-        l, lr, predictions = sess.run([loss, learning_rate, train_prediction],
-                                      feed_dict=feed_dict)
+      #  # fetch some extra nodes' data
+      #  l, lr, predictions = sess.run([loss, learning_rate, train_prediction],
+      #                                feed_dict=feed_dict)
         elapsed_time = time.time() - start_time
         start_time = time.time()
-        print('Step %d (epoch %.2f), %.1f ms' %
+        print('Step %d (epoch %.2f), %.5f ms' %
               (step, float(step) * BATCH_SIZE / train_size,
                1000 * elapsed_time / EVAL_FREQUENCY))
-        print('Minibatch loss: %.3f, learning rate: %.6f' % (l, lr))
-        print('Minibatch error: %.1f%%' % error_rate(predictions, batch_labels))
-        print('Validation error: %.1f%%' % error_rate(
-            eval_in_batches(validation_data, sess), validation_labels))
-        sys.stdout.flush()
-    # Finally print the result!
-    test_error = error_rate(eval_in_batches(test_data, sess), test_labels)
-    print('Test error: %.1f%%' % test_error)
-    if FLAGS.self_test:
-      print('test_error', test_error)
-      assert test_error == 0.0, 'expected 0.0 test_error, got %.2f' % (
-          test_error,)
+      #  print('Minibatch loss: %.3f, learning rate: %.6f' % (l, lr))
+      #  print('Minibatch error: %.1f%%' % error_rate(predictions, batch_labels))
+      #  print('Validation error: %.1f%%' % error_rate(
+      #      eval_in_batches(validation_data, sess), validation_labels))
+    sys.stdout.flush()
+    ## Finally print the result!
+    #test_error = error_rate(eval_in_batches(test_data, sess), test_labels)
+    #print('Test error: %.1f%%' % test_error)
+    #if FLAGS.self_test:
+    #  print('test_error', test_error)
+    #  assert test_error == 0.0, 'expected 0.0 test_error, got %.2f' % (
+    #      test_error,)
+  
+  # jwang
+  fetched_timeline = timeline.Timeline(run_metadata.step_stats)
+  chrome_trace = fetched_timeline.generate_chrome_trace_format()
+  with open('timeline_01.json', 'w') as f:
+      f.write(chrome_trace)
 
 
 if __name__ == '__main__':
@@ -328,7 +363,7 @@ if __name__ == '__main__':
   parser.add_argument(
       '--use_fp16',
       default=False,
-      help='Use half floats instead of full floats if True.',
+      help='Use half floats instead of full flo`ats if True.',
       action='store_true')
   parser.add_argument(
       '--self_test',
@@ -336,5 +371,6 @@ if __name__ == '__main__':
       action='store_true',
       help='True if running a self test.')
 
-  FLAGS, unparsed = parser.parse_known_args()
-  tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)
+  #FLAGS, unparsed = parser.parse_known_args()
+  #tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)
+  tf.app.run(main)

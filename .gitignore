@@ -6,6 +6,11 @@ __pycache__/
 # C extensions
 *.so
 
+# Tmp results
+
+*.json
+exe_time
+
 # Distribution / packaging
 .Python
 env/
